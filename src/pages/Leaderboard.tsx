@@ -6,10 +6,21 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 
+interface LeaderboardEntry {
+  rank: number;
+  username: string;
+  score: number;
+  time: number;
+  quizTitle?: string;
+}
+
 const Leaderboard = () => {
   const [user, setUser] = useState<{ email: string; isAdmin?: boolean } | null>(null);
   const [selectedQuiz, setSelectedQuiz] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [quizzes, setQuizzes] = useState<{ id: string; name: string }[]>([{ id: "all", name: "All Quizzes" }]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -22,40 +33,87 @@ const Leaderboard = () => {
       setUser(session?.user?.email ? { email: session.user.email } : null);
     });
 
+    fetchLeaderboard();
+    fetchQuizzes();
+
     return () => subscription.unsubscribe();
   }, []);
 
-  // Mock leaderboard data
-  const allEntries = [
-    { rank: 1, username: "CodeMaster99", score: 4850, time: 245, quizTitle: "JavaScript Fundamentals" },
-    { rank: 2, username: "ReactNinja", score: 4720, time: 267, quizTitle: "React Deep Dive" },
-    { rank: 3, username: "DevWizard", score: 4650, time: 289, quizTitle: "TypeScript Essentials" },
-    { rank: 4, username: "CSSPro", score: 4500, time: 198, quizTitle: "CSS Mastery" },
-    { rank: 5, username: "WebDev2024", score: 4380, time: 312, quizTitle: "JavaScript Fundamentals" },
-    { rank: 6, username: "FullStackHero", score: 4250, time: 334, quizTitle: "Node.js Backend" },
-    { rank: 7, username: "FrontendFan", score: 4120, time: 278, quizTitle: "React Deep Dive" },
-    { rank: 8, username: "JSLover", score: 3980, time: 356, quizTitle: "JavaScript Fundamentals" },
-    { rank: 9, username: "TypeScriptFan", score: 3850, time: 289, quizTitle: "TypeScript Essentials" },
-    { rank: 10, username: "CodingChamp", score: 3720, time: 401, quizTitle: "CSS Mastery" },
-  ];
+  useEffect(() => {
+    fetchLeaderboard();
+  }, [selectedQuiz]);
 
-  const quizzes = [
-    { id: "all", name: "All Quizzes" },
-    { id: "js", name: "JavaScript Fundamentals" },
-    { id: "react", name: "React Deep Dive" },
-    { id: "css", name: "CSS Mastery" },
-    { id: "ts", name: "TypeScript Essentials" },
-  ];
+  const fetchQuizzes = async () => {
+    const { data } = await supabase
+      .from("quizzes")
+      .select("id, title")
+      .eq("status", "published");
 
-  const filteredEntries = allEntries.filter((entry) => {
-    const matchesSearch = entry.username.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesQuiz = selectedQuiz === "all" || 
-      (selectedQuiz === "js" && entry.quizTitle === "JavaScript Fundamentals") ||
-      (selectedQuiz === "react" && entry.quizTitle === "React Deep Dive") ||
-      (selectedQuiz === "css" && entry.quizTitle === "CSS Mastery") ||
-      (selectedQuiz === "ts" && entry.quizTitle === "TypeScript Essentials");
-    return matchesSearch && matchesQuiz;
-  });
+    if (data) {
+      setQuizzes([
+        { id: "all", name: "All Quizzes" },
+        ...data.map((q) => ({ id: q.id, name: q.title })),
+      ]);
+    }
+  };
+
+  const fetchLeaderboard = async () => {
+    setLoading(true);
+    
+    let query = supabase
+      .from("quiz_attempts")
+      .select(`
+        score,
+        time_taken,
+        user_id,
+        quiz_id,
+        quizzes (title)
+      `)
+      .order("score", { ascending: false })
+      .order("time_taken", { ascending: true })
+      .limit(50);
+
+    if (selectedQuiz !== "all") {
+      query = query.eq("quiz_id", selectedQuiz);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("Error fetching leaderboard:", error);
+      setLoading(false);
+      return;
+    }
+
+    if (data) {
+      const leaderboardEntries: LeaderboardEntry[] = await Promise.all(
+        data.map(async (entry, index) => {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("username")
+            .eq("user_id", entry.user_id)
+            .maybeSingle();
+
+          return {
+            rank: index + 1,
+            username: profile?.username || "Anonymous",
+            score: entry.score,
+            time: entry.time_taken,
+            quizTitle: (entry.quizzes as { title: string } | null)?.title,
+          };
+        })
+      );
+
+      setEntries(leaderboardEntries);
+    }
+    setLoading(false);
+  };
+
+  const filteredEntries = entries.filter((entry) =>
+    entry.username.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const topThree = filteredEntries.slice(0, 3);
 
   return (
     <div className="min-h-screen bg-background">
@@ -76,43 +134,45 @@ const Leaderboard = () => {
         </div>
 
         {/* Top 3 Podium */}
-        <div className="mb-12 flex justify-center items-end gap-4">
-          {/* 2nd Place */}
-          <div className="flex flex-col items-center animate-fade-in" style={{ animationDelay: "100ms" }}>
-            <div className="w-20 h-20 rounded-full bg-gray-300/20 border-4 border-gray-300 flex items-center justify-center mb-2">
-              <Medal className="h-8 w-8 text-gray-300" />
+        {topThree.length >= 3 && (
+          <div className="mb-12 flex justify-center items-end gap-4">
+            {/* 2nd Place */}
+            <div className="flex flex-col items-center animate-fade-in" style={{ animationDelay: "100ms" }}>
+              <div className="w-20 h-20 rounded-full bg-gray-300/20 border-4 border-gray-300 flex items-center justify-center mb-2">
+                <Medal className="h-8 w-8 text-gray-300" />
+              </div>
+              <p className="font-semibold text-foreground">{topThree[1]?.username}</p>
+              <p className="text-sm text-muted-foreground">{topThree[1]?.score} pts</p>
+              <div className="mt-4 w-24 h-24 gradient-card rounded-t-lg flex items-center justify-center">
+                <span className="font-display text-4xl font-bold text-gray-300">2</span>
+              </div>
             </div>
-            <p className="font-semibold text-foreground">{allEntries[1]?.username}</p>
-            <p className="text-sm text-muted-foreground">{allEntries[1]?.score} pts</p>
-            <div className="mt-4 w-24 h-24 gradient-card rounded-t-lg flex items-center justify-center">
-              <span className="font-display text-4xl font-bold text-gray-300">2</span>
-            </div>
-          </div>
 
-          {/* 1st Place */}
-          <div className="flex flex-col items-center animate-fade-in">
-            <div className="w-24 h-24 rounded-full bg-yellow-400/20 border-4 border-yellow-400 flex items-center justify-center mb-2 glow-primary">
-              <Trophy className="h-10 w-10 text-yellow-400" />
+            {/* 1st Place */}
+            <div className="flex flex-col items-center animate-fade-in">
+              <div className="w-24 h-24 rounded-full bg-yellow-400/20 border-4 border-yellow-400 flex items-center justify-center mb-2 glow-primary">
+                <Trophy className="h-10 w-10 text-yellow-400" />
+              </div>
+              <p className="font-semibold text-foreground text-lg">{topThree[0]?.username}</p>
+              <p className="text-sm text-muted-foreground">{topThree[0]?.score} pts</p>
+              <div className="mt-4 w-28 h-32 gradient-primary rounded-t-lg flex items-center justify-center">
+                <span className="font-display text-5xl font-bold text-primary-foreground">1</span>
+              </div>
             </div>
-            <p className="font-semibold text-foreground text-lg">{allEntries[0]?.username}</p>
-            <p className="text-sm text-muted-foreground">{allEntries[0]?.score} pts</p>
-            <div className="mt-4 w-28 h-32 gradient-primary rounded-t-lg flex items-center justify-center">
-              <span className="font-display text-5xl font-bold text-primary-foreground">1</span>
-            </div>
-          </div>
 
-          {/* 3rd Place */}
-          <div className="flex flex-col items-center animate-fade-in" style={{ animationDelay: "200ms" }}>
-            <div className="w-20 h-20 rounded-full bg-amber-600/20 border-4 border-amber-600 flex items-center justify-center mb-2">
-              <Medal className="h-8 w-8 text-amber-600" />
-            </div>
-            <p className="font-semibold text-foreground">{allEntries[2]?.username}</p>
-            <p className="text-sm text-muted-foreground">{allEntries[2]?.score} pts</p>
-            <div className="mt-4 w-24 h-20 gradient-card rounded-t-lg flex items-center justify-center">
-              <span className="font-display text-4xl font-bold text-amber-600">3</span>
+            {/* 3rd Place */}
+            <div className="flex flex-col items-center animate-fade-in" style={{ animationDelay: "200ms" }}>
+              <div className="w-20 h-20 rounded-full bg-amber-600/20 border-4 border-amber-600 flex items-center justify-center mb-2">
+                <Medal className="h-8 w-8 text-amber-600" />
+              </div>
+              <p className="font-semibold text-foreground">{topThree[2]?.username}</p>
+              <p className="text-sm text-muted-foreground">{topThree[2]?.score} pts</p>
+              <div className="mt-4 w-24 h-20 gradient-card rounded-t-lg flex items-center justify-center">
+                <span className="font-display text-4xl font-bold text-amber-600">3</span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Filters */}
         <div className="mb-8 flex flex-col md:flex-row gap-4">
@@ -141,7 +201,16 @@ const Leaderboard = () => {
 
         {/* Leaderboard Table */}
         <div className="gradient-card rounded-xl border border-border p-6">
-          <LeaderboardTable entries={filteredEntries} showQuizTitle={selectedQuiz === "all"} />
+          {loading ? (
+            <div className="text-center py-8 text-muted-foreground">Loading...</div>
+          ) : filteredEntries.length === 0 ? (
+            <div className="text-center py-8">
+              <Trophy className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <p className="text-muted-foreground">No scores yet. Be the first to complete a quiz!</p>
+            </div>
+          ) : (
+            <LeaderboardTable entries={filteredEntries} showQuizTitle={selectedQuiz === "all"} />
+          )}
         </div>
       </main>
     </div>

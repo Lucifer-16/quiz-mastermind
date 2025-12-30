@@ -9,11 +9,14 @@ import {
   Trophy,
   Users,
   Settings,
-  ArrowLeft
+  ArrowLeft,
+  Save,
+  X
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -34,59 +37,58 @@ import { useToast } from "@/hooks/use-toast";
 interface Quiz {
   id: string;
   title: string;
-  description: string;
-  questionCount: number;
-  timeLimit: number;
+  description: string | null;
+  time_limit: number;
   difficulty: "easy" | "medium" | "hard";
   status: "draft" | "published";
+  question_count?: number;
+}
+
+interface Question {
+  id?: string;
+  question_text: string;
+  options: { id: string; text: string }[];
+  correct_option_id: string;
+  order_index: number;
 }
 
 const Admin = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [user, setUser] = useState<{ email: string } | null>(null);
+  const [user, setUser] = useState<{ id: string; email: string } | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("quizzes");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [editingQuiz, setEditingQuiz] = useState<Quiz | null>(null);
+  const [isQuestionDialogOpen, setIsQuestionDialogOpen] = useState(false);
+  const [selectedQuiz, setSelectedQuiz] = useState<Quiz | null>(null);
+  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [stats, setStats] = useState({
+    totalQuizzes: 0,
+    published: 0,
+    totalQuestions: 0,
+    activeUsers: 0,
+  });
   
   const [newQuiz, setNewQuiz] = useState({
     title: "",
     description: "",
-    timeLimit: 10,
+    time_limit: 10,
     difficulty: "medium" as "easy" | "medium" | "hard",
   });
 
-  // Mock quizzes data
-  const [quizzes, setQuizzes] = useState<Quiz[]>([
-    {
-      id: "1",
-      title: "JavaScript Fundamentals",
-      description: "Test your knowledge of JavaScript basics",
-      questionCount: 15,
-      timeLimit: 10,
-      difficulty: "easy",
-      status: "published",
-    },
-    {
-      id: "2",
-      title: "React Deep Dive",
-      description: "Advanced React concepts",
-      questionCount: 20,
-      timeLimit: 15,
-      difficulty: "hard",
-      status: "published",
-    },
-    {
-      id: "3",
-      title: "CSS Mastery",
-      description: "From flexbox to grid",
-      questionCount: 12,
-      timeLimit: 8,
-      difficulty: "medium",
-      status: "draft",
-    },
-  ]);
+  const [newQuestion, setNewQuestion] = useState<Question>({
+    question_text: "",
+    options: [
+      { id: "a", text: "" },
+      { id: "b", text: "" },
+      { id: "c", text: "" },
+      { id: "d", text: "" },
+    ],
+    correct_option_id: "a",
+    order_index: 0,
+  });
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -94,9 +96,9 @@ const Admin = () => {
         if (!session) {
           navigate("/auth");
         } else {
-          setUser({ email: session.user.email || "" });
+          setUser({ id: session.user.id, email: session.user.email || "" });
+          setTimeout(() => checkAdminRole(session.user.id), 0);
         }
-        setLoading(false);
       }
     );
 
@@ -104,15 +106,120 @@ const Admin = () => {
       if (!session) {
         navigate("/auth");
       } else {
-        setUser({ email: session.user.email || "" });
+        setUser({ id: session.user.id, email: session.user.email || "" });
+        checkAdminRole(session.user.id);
       }
-      setLoading(false);
     });
 
     return () => subscription.unsubscribe();
   }, [navigate]);
 
-  const handleCreateQuiz = () => {
+  const checkAdminRole = async (userId: string) => {
+    const { data } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .eq("role", "admin")
+      .maybeSingle();
+    
+    if (data) {
+      setIsAdmin(true);
+      fetchQuizzes();
+      fetchStats();
+    } else {
+      toast({
+        title: "Access Denied",
+        description: "You don't have admin privileges.",
+        variant: "destructive",
+      });
+      navigate("/dashboard");
+    }
+    setLoading(false);
+  };
+
+  const fetchStats = async () => {
+    const { count: quizCount } = await supabase
+      .from("quizzes")
+      .select("*", { count: "exact", head: true });
+
+    const { count: publishedCount } = await supabase
+      .from("quizzes")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "published");
+
+    const { count: questionCount } = await supabase
+      .from("questions")
+      .select("*", { count: "exact", head: true });
+
+    const { count: userCount } = await supabase
+      .from("profiles")
+      .select("*", { count: "exact", head: true });
+
+    setStats({
+      totalQuizzes: quizCount || 0,
+      published: publishedCount || 0,
+      totalQuestions: questionCount || 0,
+      activeUsers: userCount || 0,
+    });
+  };
+
+  const fetchQuizzes = async () => {
+    const { data, error } = await supabase
+      .from("quizzes")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching quizzes:", error);
+      return;
+    }
+
+    if (data) {
+      const quizzesWithCounts = await Promise.all(
+        data.map(async (quiz) => {
+          const { count } = await supabase
+            .from("questions")
+            .select("*", { count: "exact", head: true })
+            .eq("quiz_id", quiz.id);
+
+          return {
+            ...quiz,
+            difficulty: quiz.difficulty as "easy" | "medium" | "hard",
+            status: quiz.status as "draft" | "published",
+            question_count: count || 0,
+          };
+        })
+      );
+      setQuizzes(quizzesWithCounts);
+    }
+  };
+
+  const fetchQuestions = async (quizId: string) => {
+    const { data, error } = await supabase
+      .from("questions")
+      .select("*")
+      .eq("quiz_id", quizId)
+      .order("order_index", { ascending: true });
+
+    if (error) {
+      console.error("Error fetching questions:", error);
+      return;
+    }
+
+    if (data) {
+      setQuestions(
+        data.map((q) => ({
+          id: q.id,
+          question_text: q.question_text,
+          options: q.options as { id: string; text: string }[],
+          correct_option_id: q.correct_option_id,
+          order_index: q.order_index,
+        }))
+      );
+    }
+  };
+
+  const handleCreateQuiz = async () => {
     if (!newQuiz.title.trim()) {
       toast({
         title: "Error",
@@ -122,19 +229,28 @@ const Admin = () => {
       return;
     }
 
-    const quiz: Quiz = {
-      id: String(Date.now()),
+    const { error } = await supabase.from("quizzes").insert({
       title: newQuiz.title,
-      description: newQuiz.description,
-      questionCount: 0,
-      timeLimit: newQuiz.timeLimit,
+      description: newQuiz.description || null,
+      time_limit: newQuiz.time_limit * 60,
       difficulty: newQuiz.difficulty,
       status: "draft",
-    };
+      created_by: user?.id,
+    });
 
-    setQuizzes([...quizzes, quiz]);
-    setNewQuiz({ title: "", description: "", timeLimit: 10, difficulty: "medium" });
+    if (error) {
+      toast({
+        title: "Error",
+        description: "Failed to create quiz",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setNewQuiz({ title: "", description: "", time_limit: 10, difficulty: "medium" });
     setIsDialogOpen(false);
+    fetchQuizzes();
+    fetchStats();
     
     toast({
       title: "Quiz Created",
@@ -142,30 +258,133 @@ const Admin = () => {
     });
   };
 
-  const handleDeleteQuiz = (id: string) => {
-    setQuizzes(quizzes.filter((q) => q.id !== id));
+  const handleDeleteQuiz = async (id: string) => {
+    const { error } = await supabase.from("quizzes").delete().eq("id", id);
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: "Failed to delete quiz",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    fetchQuizzes();
+    fetchStats();
     toast({
       title: "Quiz Deleted",
       description: "The quiz has been permanently deleted.",
     });
   };
 
-  const handleToggleStatus = (id: string) => {
-    setQuizzes(
-      quizzes.map((q) =>
-        q.id === id
-          ? { ...q, status: q.status === "draft" ? "published" : "draft" }
-          : q
-      )
-    );
+  const handleToggleStatus = async (quiz: Quiz) => {
+    const newStatus = quiz.status === "draft" ? "published" : "draft";
+    
+    const { error } = await supabase
+      .from("quizzes")
+      .update({ status: newStatus })
+      .eq("id", quiz.id);
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: "Failed to update quiz status",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    fetchQuizzes();
+    fetchStats();
   };
 
-  const stats = [
-    { label: "Total Quizzes", value: quizzes.length, icon: FileQuestion },
-    { label: "Published", value: quizzes.filter((q) => q.status === "published").length, icon: Trophy },
-    { label: "Total Questions", value: quizzes.reduce((acc, q) => acc + q.questionCount, 0), icon: LayoutDashboard },
-    { label: "Active Users", value: 156, icon: Users },
-  ];
+  const handleAddQuestion = async () => {
+    if (!selectedQuiz || !newQuestion.question_text.trim()) {
+      toast({
+        title: "Error",
+        description: "Question text is required",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const validOptions = newQuestion.options.filter((o) => o.text.trim());
+    if (validOptions.length < 2) {
+      toast({
+        title: "Error",
+        description: "At least 2 options are required",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const { error } = await supabase.from("questions").insert({
+      quiz_id: selectedQuiz.id,
+      question_text: newQuestion.question_text,
+      options: validOptions,
+      correct_option_id: newQuestion.correct_option_id,
+      order_index: questions.length,
+    });
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: "Failed to add question",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setNewQuestion({
+      question_text: "",
+      options: [
+        { id: "a", text: "" },
+        { id: "b", text: "" },
+        { id: "c", text: "" },
+        { id: "d", text: "" },
+      ],
+      correct_option_id: "a",
+      order_index: 0,
+    });
+
+    fetchQuestions(selectedQuiz.id);
+    fetchQuizzes();
+    fetchStats();
+    
+    toast({
+      title: "Question Added",
+      description: "The question has been added to the quiz.",
+    });
+  };
+
+  const handleDeleteQuestion = async (questionId: string) => {
+    if (!selectedQuiz) return;
+
+    const { error } = await supabase
+      .from("questions")
+      .delete()
+      .eq("id", questionId);
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: "Failed to delete question",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    fetchQuestions(selectedQuiz.id);
+    fetchQuizzes();
+    fetchStats();
+  };
+
+  const openQuestionManager = (quiz: Quiz) => {
+    setSelectedQuiz(quiz);
+    fetchQuestions(quiz.id);
+    setIsQuestionDialogOpen(true);
+  };
 
   const sidebarItems = [
     { id: "quizzes", label: "Quizzes", icon: FileQuestion },
@@ -174,12 +393,23 @@ const Admin = () => {
     { id: "settings", label: "Settings", icon: Settings },
   ];
 
+  const statCards = [
+    { label: "Total Quizzes", value: stats.totalQuizzes, icon: FileQuestion },
+    { label: "Published", value: stats.published, icon: Trophy },
+    { label: "Total Questions", value: stats.totalQuestions, icon: LayoutDashboard },
+    { label: "Active Users", value: stats.activeUsers, icon: Users },
+  ];
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Loading...</div>
       </div>
     );
+  }
+
+  if (!isAdmin) {
+    return null;
   }
 
   return (
@@ -223,7 +453,7 @@ const Admin = () => {
         <div className="max-w-6xl mx-auto">
           {/* Stats */}
           <div className="grid grid-cols-4 gap-4 mb-8">
-            {stats.map((stat, index) => (
+            {statCards.map((stat, index) => (
               <div
                 key={stat.label}
                 className="gradient-card rounded-xl border border-border p-6 animate-fade-in"
@@ -276,8 +506,8 @@ const Admin = () => {
                           <Label>Time Limit (minutes)</Label>
                           <Input
                             type="number"
-                            value={newQuiz.timeLimit}
-                            onChange={(e) => setNewQuiz({ ...newQuiz, timeLimit: Number(e.target.value) })}
+                            value={newQuiz.time_limit}
+                            onChange={(e) => setNewQuiz({ ...newQuiz, time_limit: Number(e.target.value) })}
                           />
                         </div>
                         <div className="space-y-2">
@@ -308,66 +538,190 @@ const Admin = () => {
               </div>
 
               <div className="space-y-4">
-                {quizzes.map((quiz) => (
-                  <div
-                    key={quiz.id}
-                    className="gradient-card rounded-xl border border-border p-6 flex items-center justify-between"
-                  >
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="font-display font-bold text-foreground">{quiz.title}</h3>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                            quiz.status === "published"
-                              ? "bg-accent/20 text-accent"
-                              : "bg-muted text-muted-foreground"
-                          }`}
-                        >
-                          {quiz.status}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                            quiz.difficulty === "easy"
-                              ? "bg-accent/20 text-accent"
-                              : quiz.difficulty === "medium"
-                              ? "bg-warning/20 text-warning"
-                              : "bg-destructive/20 text-destructive"
-                          }`}
-                        >
-                          {quiz.difficulty}
-                        </span>
-                      </div>
-                      <p className="text-sm text-muted-foreground">{quiz.description}</p>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {quiz.questionCount} questions • {quiz.timeLimit} min
-                      </p>
-                    </div>
-                    
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleToggleStatus(quiz.id)}
-                      >
-                        {quiz.status === "draft" ? "Publish" : "Unpublish"}
-                      </Button>
-                      <Button variant="ghost" size="icon">
-                        <Edit className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDeleteQuiz(quiz.id)}
-                        className="text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
+                {quizzes.length === 0 ? (
+                  <div className="text-center py-12 gradient-card rounded-xl border border-border">
+                    <FileQuestion className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                    <p className="text-muted-foreground">No quizzes yet. Create your first quiz!</p>
                   </div>
-                ))}
+                ) : (
+                  quizzes.map((quiz) => (
+                    <div
+                      key={quiz.id}
+                      className="gradient-card rounded-xl border border-border p-6 flex items-center justify-between"
+                    >
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                          <h3 className="font-display font-bold text-foreground">{quiz.title}</h3>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                              quiz.status === "published"
+                                ? "bg-accent/20 text-accent"
+                                : "bg-muted text-muted-foreground"
+                            }`}
+                          >
+                            {quiz.status}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                              quiz.difficulty === "easy"
+                                ? "bg-accent/20 text-accent"
+                                : quiz.difficulty === "medium"
+                                ? "bg-warning/20 text-warning"
+                                : "bg-destructive/20 text-destructive"
+                            }`}
+                          >
+                            {quiz.difficulty}
+                          </span>
+                        </div>
+                        <p className="text-sm text-muted-foreground">{quiz.description}</p>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {quiz.question_count} questions • {Math.floor(quiz.time_limit / 60)} min
+                        </p>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleToggleStatus(quiz)}
+                        >
+                          {quiz.status === "draft" ? "Publish" : "Unpublish"}
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="icon"
+                          onClick={() => openQuestionManager(quiz)}
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleDeleteQuiz(quiz.id)}
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
+
+          {/* Question Manager Dialog */}
+          <Dialog open={isQuestionDialogOpen} onOpenChange={setIsQuestionDialogOpen}>
+            <DialogContent className="bg-card border-border max-w-3xl max-h-[80vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="font-display">
+                  Manage Questions - {selectedQuiz?.title}
+                </DialogTitle>
+              </DialogHeader>
+              
+              <div className="space-y-6 mt-4">
+                {/* Add Question Form */}
+                <div className="gradient-card rounded-xl border border-border p-4 space-y-4">
+                  <h4 className="font-semibold text-foreground">Add New Question</h4>
+                  
+                  <div className="space-y-2">
+                    <Label>Question</Label>
+                    <Textarea
+                      value={newQuestion.question_text}
+                      onChange={(e) => setNewQuestion({ ...newQuestion, question_text: e.target.value })}
+                      placeholder="Enter your question..."
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    {newQuestion.options.map((option, index) => (
+                      <div key={option.id} className="space-y-1">
+                        <Label>Option {option.id.toUpperCase()}</Label>
+                        <Input
+                          value={option.text}
+                          onChange={(e) => {
+                            const newOptions = [...newQuestion.options];
+                            newOptions[index].text = e.target.value;
+                            setNewQuestion({ ...newQuestion, options: newOptions });
+                          }}
+                          placeholder={`Option ${option.id.toUpperCase()}`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Correct Answer</Label>
+                    <Select
+                      value={newQuestion.correct_option_id}
+                      onValueChange={(value) => setNewQuestion({ ...newQuestion, correct_option_id: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="a">Option A</SelectItem>
+                        <SelectItem value="b">Option B</SelectItem>
+                        <SelectItem value="c">Option C</SelectItem>
+                        <SelectItem value="d">Option D</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <Button variant="hero" onClick={handleAddQuestion}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Question
+                  </Button>
+                </div>
+
+                {/* Existing Questions */}
+                <div className="space-y-3">
+                  <h4 className="font-semibold text-foreground">
+                    Existing Questions ({questions.length})
+                  </h4>
+                  
+                  {questions.length === 0 ? (
+                    <p className="text-muted-foreground text-sm">No questions yet.</p>
+                  ) : (
+                    questions.map((q, index) => (
+                      <div
+                        key={q.id}
+                        className="rounded-lg bg-muted p-4 flex items-start justify-between gap-4"
+                      >
+                        <div className="flex-1">
+                          <p className="font-medium text-foreground">
+                            {index + 1}. {q.question_text}
+                          </p>
+                          <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                            {q.options.map((opt) => (
+                              <span
+                                key={opt.id}
+                                className={`${
+                                  opt.id === q.correct_option_id
+                                    ? "text-accent font-medium"
+                                    : "text-muted-foreground"
+                                }`}
+                              >
+                                {opt.id.toUpperCase()}: {opt.text}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => q.id && handleDeleteQuestion(q.id)}
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
 
           {/* Placeholder for other tabs */}
           {activeTab !== "quizzes" && (
