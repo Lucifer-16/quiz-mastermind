@@ -4,11 +4,38 @@ import { Trophy, Target, Clock, TrendingUp } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import QuizCard from "@/components/QuizCard";
 import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
+
+interface Quiz {
+  id: string;
+  title: string;
+  description: string | null;
+  time_limit: number;
+  difficulty: "easy" | "medium" | "hard";
+  status: string;
+  question_count?: number;
+  participants?: number;
+}
+
+interface UserStats {
+  quizzesCompleted: number;
+  averageScore: number;
+  totalTime: number;
+  streak: number;
+}
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [user, setUser] = useState<{ email: string; isAdmin?: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
+  const [userStats, setUserStats] = useState<UserStats>({
+    quizzesCompleted: 0,
+    averageScore: 0,
+    totalTime: 0,
+    streak: 0,
+  });
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -17,6 +44,10 @@ const Dashboard = () => {
           navigate("/auth");
         } else {
           setUser({ email: session.user.email || "" });
+          setTimeout(() => {
+            checkAdminRole(session.user.id);
+            fetchUserStats(session.user.id);
+          }, 0);
         }
         setLoading(false);
       }
@@ -27,75 +58,98 @@ const Dashboard = () => {
         navigate("/auth");
       } else {
         setUser({ email: session.user.email || "" });
+        checkAdminRole(session.user.id);
+        fetchUserStats(session.user.id);
       }
       setLoading(false);
     });
 
+    fetchQuizzes();
+
     return () => subscription.unsubscribe();
   }, [navigate]);
 
-  const stats = [
-    { icon: Trophy, label: "Quizzes Completed", value: "12", color: "text-primary" },
-    { icon: Target, label: "Average Score", value: "85%", color: "text-accent" },
-    { icon: Clock, label: "Total Time", value: "3h 24m", color: "text-secondary" },
-    { icon: TrendingUp, label: "Current Streak", value: "5 days", color: "text-warning" },
-  ];
+  const checkAdminRole = async (userId: string) => {
+    const { data } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .eq("role", "admin")
+      .maybeSingle();
+    
+    if (data) {
+      setUser((prev) => prev ? { ...prev, isAdmin: true } : null);
+    }
+  };
 
-  const availableQuizzes = [
-    {
-      id: "1",
-      title: "JavaScript Fundamentals",
-      description: "Test your knowledge of JavaScript basics including variables, functions, and control flow.",
-      questionCount: 15,
-      timeLimit: 10,
-      difficulty: "easy" as const,
-      participants: 1247,
-    },
-    {
-      id: "2",
-      title: "React Deep Dive",
-      description: "Advanced React concepts including hooks, context, and performance optimization.",
-      questionCount: 20,
-      timeLimit: 15,
-      difficulty: "hard" as const,
-      participants: 892,
-    },
-    {
-      id: "3",
-      title: "CSS Mastery",
-      description: "From flexbox to grid, animations to responsive design - prove your CSS skills.",
-      questionCount: 12,
-      timeLimit: 8,
-      difficulty: "medium" as const,
-      participants: 1560,
-    },
-    {
-      id: "4",
-      title: "TypeScript Essentials",
-      description: "Master TypeScript types, interfaces, generics, and advanced patterns.",
-      questionCount: 18,
-      timeLimit: 12,
-      difficulty: "medium" as const,
-      participants: 723,
-    },
-    {
-      id: "5",
-      title: "Node.js Backend",
-      description: "Server-side JavaScript, Express, APIs, and database integration.",
-      questionCount: 16,
-      timeLimit: 14,
-      difficulty: "hard" as const,
-      participants: 654,
-    },
-    {
-      id: "6",
-      title: "HTML5 Basics",
-      description: "Semantic HTML, forms, accessibility, and modern web standards.",
-      questionCount: 10,
-      timeLimit: 6,
-      difficulty: "easy" as const,
-      participants: 2103,
-    },
+  const fetchUserStats = async (userId: string) => {
+    const { data: attempts } = await supabase
+      .from("quiz_attempts")
+      .select("score, total_questions, time_taken")
+      .eq("user_id", userId);
+
+    if (attempts && attempts.length > 0) {
+      const totalScore = attempts.reduce((acc, a) => acc + (a.score / (a.total_questions * 100)) * 100, 0);
+      const totalTime = attempts.reduce((acc, a) => acc + a.time_taken, 0);
+      
+      setUserStats({
+        quizzesCompleted: attempts.length,
+        averageScore: Math.round(totalScore / attempts.length),
+        totalTime,
+        streak: Math.min(attempts.length, 7),
+      });
+    }
+  };
+
+  const fetchQuizzes = async () => {
+    const { data: quizzesData, error } = await supabase
+      .from("quizzes")
+      .select("*")
+      .eq("status", "published")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching quizzes:", error);
+      return;
+    }
+
+    if (quizzesData) {
+      const quizzesWithCounts = await Promise.all(
+        quizzesData.map(async (quiz) => {
+          const { count: questionCount } = await supabase
+            .from("questions")
+            .select("*", { count: "exact", head: true })
+            .eq("quiz_id", quiz.id);
+
+          const { count: participantCount } = await supabase
+            .from("quiz_attempts")
+            .select("*", { count: "exact", head: true })
+            .eq("quiz_id", quiz.id);
+
+          return {
+            ...quiz,
+            difficulty: quiz.difficulty as "easy" | "medium" | "hard",
+            question_count: questionCount || 0,
+            participants: participantCount || 0,
+          };
+        })
+      );
+
+      setQuizzes(quizzesWithCounts);
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  };
+
+  const stats = [
+    { icon: Trophy, label: "Quizzes Completed", value: String(userStats.quizzesCompleted), color: "text-primary" },
+    { icon: Target, label: "Average Score", value: `${userStats.averageScore}%`, color: "text-accent" },
+    { icon: Clock, label: "Total Time", value: formatTime(userStats.totalTime), color: "text-secondary" },
+    { icon: TrendingUp, label: "Current Streak", value: `${userStats.streak} days`, color: "text-warning" },
   ];
 
   if (loading) {
@@ -139,15 +193,31 @@ const Dashboard = () => {
           <h2 className="font-display text-2xl font-bold text-foreground mb-6">
             Available Quizzes
           </h2>
-          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {availableQuizzes.map((quiz) => (
-              <QuizCard
-                key={quiz.id}
-                {...quiz}
-                onStart={() => navigate(`/quiz/${quiz.id}`)}
-              />
-            ))}
-          </div>
+          
+          {quizzes.length === 0 ? (
+            <div className="text-center py-12 gradient-card rounded-xl border border-border">
+              <Trophy className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="font-display text-xl font-bold text-foreground mb-2">No Quizzes Yet</h3>
+              <p className="text-muted-foreground">
+                Check back soon for new quizzes!
+              </p>
+            </div>
+          ) : (
+            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+              {quizzes.map((quiz) => (
+                <QuizCard
+                  key={quiz.id}
+                  title={quiz.title}
+                  description={quiz.description || ""}
+                  questionCount={quiz.question_count || 0}
+                  timeLimit={Math.floor(quiz.time_limit / 60)}
+                  difficulty={quiz.difficulty}
+                  participants={quiz.participants}
+                  onStart={() => navigate(`/quiz/${quiz.id}`)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </main>
     </div>

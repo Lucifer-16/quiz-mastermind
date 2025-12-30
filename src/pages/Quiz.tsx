@@ -9,87 +9,33 @@ import { useToast } from "@/hooks/use-toast";
 
 interface Question {
   id: string;
-  question: string;
+  question_text: string;
   options: { id: string; text: string }[];
-  correctOptionId: string;
+  correct_option_id: string;
+}
+
+interface QuizData {
+  id: string;
+  title: string;
+  description: string | null;
+  time_limit: number;
+  questions: Question[];
 }
 
 const Quiz = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [user, setUser] = useState<{ email: string } | null>(null);
+  const [user, setUser] = useState<{ id: string; email: string } | null>(null);
+  const [quizData, setQuizData] = useState<QuizData | null>(null);
+  const [loading, setLoading] = useState(true);
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [score, setScore] = useState(0);
+  const [correctAnswers, setCorrectAnswers] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
   const [timeSpent, setTimeSpent] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
-
-  // Mock quiz data
-  const quizData = {
-    id: id || "1",
-    title: "JavaScript Fundamentals",
-    description: "Test your knowledge of JavaScript basics",
-    timeLimit: 600, // 10 minutes in seconds
-    questions: [
-      {
-        id: "q1",
-        question: "What is the output of typeof null in JavaScript?",
-        options: [
-          { id: "a", text: "null" },
-          { id: "b", text: "object" },
-          { id: "c", text: "undefined" },
-          { id: "d", text: "number" },
-        ],
-        correctOptionId: "b",
-      },
-      {
-        id: "q2",
-        question: "Which method is used to add an element to the end of an array?",
-        options: [
-          { id: "a", text: "shift()" },
-          { id: "b", text: "unshift()" },
-          { id: "c", text: "push()" },
-          { id: "d", text: "pop()" },
-        ],
-        correctOptionId: "c",
-      },
-      {
-        id: "q3",
-        question: "What does 'use strict' do in JavaScript?",
-        options: [
-          { id: "a", text: "Makes code run faster" },
-          { id: "b", text: "Enables strict mode for catching errors" },
-          { id: "c", text: "Disables all warnings" },
-          { id: "d", text: "Allows deprecated features" },
-        ],
-        correctOptionId: "b",
-      },
-      {
-        id: "q4",
-        question: "Which of the following is NOT a JavaScript data type?",
-        options: [
-          { id: "a", text: "Boolean" },
-          { id: "b", text: "Float" },
-          { id: "c", text: "Symbol" },
-          { id: "d", text: "BigInt" },
-        ],
-        correctOptionId: "b",
-      },
-      {
-        id: "q5",
-        question: "What is the result of 3 + '3' in JavaScript?",
-        options: [
-          { id: "a", text: "6" },
-          { id: "b", text: "33" },
-          { id: "c", text: "NaN" },
-          { id: "d", text: "Error" },
-        ],
-        correctOptionId: "b",
-      },
-    ] as Question[],
-  };
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -97,7 +43,7 @@ const Quiz = () => {
         if (!session) {
           navigate("/auth");
         } else {
-          setUser({ email: session.user.email || "" });
+          setUser({ id: session.user.id, email: session.user.email || "" });
         }
       }
     );
@@ -106,12 +52,16 @@ const Quiz = () => {
       if (!session) {
         navigate("/auth");
       } else {
-        setUser({ email: session.user.email || "" });
+        setUser({ id: session.user.id, email: session.user.email || "" });
       }
     });
 
+    if (id) {
+      fetchQuizData(id);
+    }
+
     return () => subscription.unsubscribe();
-  }, [navigate]);
+  }, [navigate, id]);
 
   useEffect(() => {
     if (isStarted && startTime) {
@@ -122,7 +72,57 @@ const Quiz = () => {
     }
   }, [isStarted, startTime]);
 
+  const fetchQuizData = async (quizId: string) => {
+    const { data: quiz, error: quizError } = await supabase
+      .from("quizzes")
+      .select("*")
+      .eq("id", quizId)
+      .maybeSingle();
+
+    if (quizError || !quiz) {
+      toast({
+        title: "Error",
+        description: "Quiz not found",
+        variant: "destructive",
+      });
+      navigate("/dashboard");
+      return;
+    }
+
+    const { data: questions, error: questionsError } = await supabase
+      .from("questions")
+      .select("*")
+      .eq("quiz_id", quizId)
+      .order("order_index", { ascending: true });
+
+    if (questionsError) {
+      console.error("Error fetching questions:", questionsError);
+    }
+
+    setQuizData({
+      id: quiz.id,
+      title: quiz.title,
+      description: quiz.description,
+      time_limit: quiz.time_limit,
+      questions: (questions || []).map((q) => ({
+        id: q.id,
+        question_text: q.question_text,
+        options: q.options as { id: string; text: string }[],
+        correct_option_id: q.correct_option_id,
+      })),
+    });
+    setLoading(false);
+  };
+
   const handleStart = () => {
+    if (!quizData?.questions.length) {
+      toast({
+        title: "No Questions",
+        description: "This quiz has no questions yet.",
+        variant: "destructive",
+      });
+      return;
+    }
     setIsStarted(true);
     setStartTime(Date.now());
   };
@@ -130,9 +130,10 @@ const Quiz = () => {
   const handleAnswer = (optionId: string, isCorrect: boolean) => {
     if (isCorrect) {
       setScore((prev) => prev + 100);
+      setCorrectAnswers((prev) => prev + 1);
     }
 
-    if (currentQuestion < quizData.questions.length - 1) {
+    if (quizData && currentQuestion < quizData.questions.length - 1) {
       setCurrentQuestion((prev) => prev + 1);
     } else {
       finishQuiz();
@@ -148,10 +149,25 @@ const Quiz = () => {
     finishQuiz();
   };
 
-  const finishQuiz = () => {
+  const finishQuiz = async () => {
     setIsFinished(true);
     const finalTime = startTime ? Math.floor((Date.now() - startTime) / 1000) : timeSpent;
     setTimeSpent(finalTime);
+
+    if (user && quizData) {
+      const { error } = await supabase.from("quiz_attempts").insert({
+        user_id: user.id,
+        quiz_id: quizData.id,
+        score: score + (quizData.questions[currentQuestion] ? 0 : 0),
+        total_questions: quizData.questions.length,
+        correct_answers: correctAnswers,
+        time_taken: finalTime,
+      });
+
+      if (error) {
+        console.error("Error saving attempt:", error);
+      }
+    }
   };
 
   const formatTime = (seconds: number) => {
@@ -159,6 +175,18 @@ const Quiz = () => {
     const secs = seconds % 60;
     return `${mins}:${String(secs).padStart(2, "0")}`;
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading quiz...</div>
+      </div>
+    );
+  }
+
+  if (!quizData) {
+    return null;
+  }
 
   if (!isStarted) {
     return (
@@ -197,7 +225,7 @@ const Quiz = () => {
               </div>
               <div className="rounded-lg bg-muted p-4">
                 <Clock className="h-5 w-5 text-accent mx-auto mb-2" />
-                <p className="font-display font-bold text-foreground">{quizData.timeLimit / 60} min</p>
+                <p className="font-display font-bold text-foreground">{Math.floor(quizData.time_limit / 60)} min</p>
                 <p className="text-xs text-muted-foreground">Time Limit</p>
               </div>
               <div className="rounded-lg bg-muted p-4">
@@ -207,8 +235,14 @@ const Quiz = () => {
               </div>
             </div>
 
-            <Button variant="hero" size="xl" className="w-full" onClick={handleStart}>
-              Start Quiz
+            <Button 
+              variant="hero" 
+              size="xl" 
+              className="w-full" 
+              onClick={handleStart}
+              disabled={quizData.questions.length === 0}
+            >
+              {quizData.questions.length === 0 ? "No Questions Available" : "Start Quiz"}
             </Button>
           </div>
         </div>
@@ -217,7 +251,9 @@ const Quiz = () => {
   }
 
   if (isFinished) {
-    const percentage = Math.round((score / (quizData.questions.length * 100)) * 100);
+    const percentage = quizData.questions.length > 0 
+      ? Math.round((correctAnswers / quizData.questions.length) * 100)
+      : 0;
     const isPassing = percentage >= 60;
 
     return (
@@ -269,6 +305,8 @@ const Quiz = () => {
     );
   }
 
+  const currentQ = quizData.questions[currentQuestion];
+
   return (
     <div className="min-h-screen bg-background p-4">
       <div className="container mx-auto max-w-3xl">
@@ -279,7 +317,7 @@ const Quiz = () => {
           </Button>
           
           <Timer
-            totalSeconds={quizData.timeLimit}
+            totalSeconds={quizData.time_limit}
             onTimeUp={handleTimeUp}
             isActive={isStarted && !isFinished}
           />
@@ -292,9 +330,9 @@ const Quiz = () => {
 
         <div className="gradient-card rounded-2xl border border-border p-8">
           <QuestionCard
-            question={quizData.questions[currentQuestion].question}
-            options={quizData.questions[currentQuestion].options}
-            correctOptionId={quizData.questions[currentQuestion].correctOptionId}
+            question={currentQ.question_text}
+            options={currentQ.options}
+            correctOptionId={currentQ.correct_option_id}
             questionNumber={currentQuestion + 1}
             totalQuestions={quizData.questions.length}
             onAnswer={handleAnswer}
