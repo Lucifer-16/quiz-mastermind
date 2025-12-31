@@ -31,10 +31,10 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [userStats, setUserStats] = useState<UserStats>({
-    quizzesCompleted: 0,
-    averageScore: 0,
-    totalTime: 0,
-    streak: 0,
+    quizzesCompleted: 2,
+    averageScore: 80/100,
+    totalTime: 20,
+    streak: 2,
   });
 
   useEffect(() => {
