@@ -67,10 +67,12 @@ const Navbar = ({ user, onLogout }: NavbarProps) => {
                 </Link>
               )}
               
-              <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-1.5">
-                <User className="h-4 w-4 text-primary" />
-                <span className="text-sm text-foreground">{user.email}</span>
-              </div>
+              <Link to="/profile">
+                <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-1.5 hover:bg-muted/80 transition-colors cursor-pointer">
+                  <User className="h-4 w-4 text-primary" />
+                  <span className="text-sm text-foreground">{user.email}</span>
+                </div>
+              </Link>
               
               <Button variant="ghost" size="icon" onClick={handleLogout}>
                 <LogOut className="h-4 w-4" />
